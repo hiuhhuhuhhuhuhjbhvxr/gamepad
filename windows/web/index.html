@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Game Pad Remote</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+  html,body{margin:0;height:100%;background:#0f1115;color:#e8eaf0;font-family:system-ui,Segoe UI,Roboto,sans-serif;overflow:hidden;touch-action:none;overscroll-behavior:none}
+  body{display:flex;flex-direction:column}
+  #hostbar{display:none;gap:14px;align-items:center;flex-wrap:wrap;padding:8px 14px;background:#171a21;border-bottom:1px solid #262b36;font-size:14px}
+  body.host #hostbar{display:flex}
+  #hostbar b{color:#7dd3fc}
+  #hostbar .pin{font-size:22px;font-weight:700;letter-spacing:3px;color:#fde68a}
+  #hostbar button{padding:6px 12px}
+  #wrap{flex:1;position:relative;min-height:0}
+  #stage{position:absolute;left:50%;top:50%;width:900px;height:440px;transform-origin:center;}
+  .abs{position:absolute}
+  .btn{position:absolute;display:flex;align-items:center;justify-content:center;font-weight:700;color:#cfd5e2;
+       background:#1d222c;border:2px solid #343c4d;border-radius:14px;touch-action:none;font-size:22px}
+  .btn.on{background:#3b82f6;border-color:#93c5fd;color:#fff}
+  .round{border-radius:50%}
+  .face-A{color:#4ade80}.face-B{color:#f87171}.face-X{color:#60a5fa}.face-Y{color:#fbbf24}
+  .small{font-size:14px;border-radius:10px}
+  .stick{position:absolute;border-radius:50%;background:radial-gradient(#1a1f29,#12151c);border:3px solid #343c4d;touch-action:none}
+  .knob{position:absolute;left:27.5%;top:27.5%;width:45%;height:45%;border-radius:50%;background:radial-gradient(#566178,#2d3445);border:2px solid #7c89a6;pointer-events:none}
+  #pill{left:330px;top:8px;width:240px;height:30px;border-radius:15px;background:#1d222c;border:1px solid #343c4d;font-size:13px;display:flex;align-items:center;justify-content:center;color:#9aa3b5}
+  #pill.ok{color:#4ade80;border-color:#166534}
+  #overlay{position:fixed;inset:0;background:#0f1115ee;display:flex;align-items:center;justify-content:center;z-index:10}
+  body.host #overlay{display:none!important}
+  .card{width:min(92vw,360px);background:#171a21;border:1px solid #262b36;border-radius:16px;padding:22px;text-align:center}
+  .card h1{margin:0 0 4px;font-size:22px}.card p{margin:6px 0 16px;color:#9aa3b5;font-size:14px}
+  input{width:100%;font-size:32px;letter-spacing:12px;text-align:center;padding:10px;border-radius:12px;border:1px solid #343c4d;background:#0f1115;color:#fff;user-select:text;-webkit-user-select:text}
+  button{font:inherit;font-weight:600;padding:12px 18px;border-radius:12px;border:0;background:#3b82f6;color:#fff;cursor:pointer}
+  button.alt{background:#262b36}
+  #go{width:100%;margin-top:14px}
+  #err{color:#f87171;min-height:20px;margin-top:10px;font-size:14px}
+  #rotate{display:none;position:fixed;inset:0;z-index:20;background:#0f1115;align-items:center;justify-content:center;text-align:center;font-size:18px;padding:30px}
+  @media (orientation:portrait){body:not(.host) #rotate{display:flex}}
+</style>
+</head>
+<body>
+<div id="hostbar">
+  <span>📱 On your phone open: <span id="urls"><b>…</b></span></span>
+  <span>PIN <span class="pin" id="hpin">----</span></span>
+  <span>Controllers <b id="hpads">0</b>/<span id="hmax">1</span></span>
+  <span id="hmode" style="color:#9aa3b5"></span>
+  <button id="hostpad" class="alt">Use this PC as a controller</button>
+</div>
+<div id="wrap"><div id="stage">
+  <div id="pill" class="abs">Not connected</div>
+</div></div>
+
+<div id="overlay"><div class="card">
+  <h1>🎮 Game Pad Remote</h1>
+  <p>Enter the 4-digit PIN shown on your PC.</p>
+  <input id="pin" inputmode="numeric" maxlength="4" placeholder="••••" autocomplete="off">
+  <button id="go">Connect</button>
+  <div id="err"></div>
+</div></div>
+<div id="rotate">↻ Rotate your phone to landscape</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const stage = $("#stage"), pill = $("#pill");
+const isHost = ["localhost","127.0.0.1","[::1]"].includes(location.hostname);
+if (isHost) document.body.classList.add("host");
+
+/* ---------- state ---------- */
+const st = {b:0, lt:0, rt:0, lx:0, ly:0, rx:0, ry:0};
+const BIT = {A:0,B:1,X:2,Y:3,LB:4,RB:5,BACK:6,START:7,L3:8,R3:9,UP:10,DOWN:11,LEFT:12,RIGHT:13,GUIDE:14};
+let haptics = true;
+const NATIVE = typeof RGNative !== "undefined";          // true inside the Android app
+const buzz = ms => { if (!haptics) return;
+  try { if (NATIVE) RGNative.vibrate(ms); else if (navigator.vibrate) navigator.vibrate(ms); } catch(e){} };
+const mot = {t:0, gx:0, gy:0};                           // motion values pushed by the Android app
+window.rgMotion = (t, gx, gy) => { mot.t = t; mot.gx = gx; mot.gy = gy; };
+let motionMode = 0, sensIdx = 1;                         // 0 off, 1 tilt steering, 2 gyro aim
+const SENS = [3, 5, 8];
+try { motionMode = +localStorage.getItem("rgmode") || 0; sensIdx = +localStorage.getItem("rgsens") || 1; } catch(e){}
+
+/* ---------- build the gamepad (design size 900x440) ---------- */
+function mk(cls, x, y, w, h, label, extra) {
+  const e = document.createElement("div");
+  e.className = cls; e.textContent = label || "";
+  Object.assign(e.style, {left:x+"px", top:y+"px", width:w+"px", height:h+"px"});
+  if (extra) e.classList.add(...extra.split(" "));
+  stage.appendChild(e); return e;
+}
+function button(x,y,w,h,label,name,extra) {
+  const e = mk("btn",x,y,w,h,label,extra);
+  const down = ev => { ev.preventDefault(); e.setPointerCapture(ev.pointerId); e.classList.add("on"); buzz(12);
+    if (name==="LT") st.lt=255; else if (name==="RT") st.rt=255; else st.b |= 1<<BIT[name]; };
+  const up = ev => { e.classList.remove("on");
+    if (name==="LT") st.lt=0; else if (name==="RT") st.rt=0; else st.b &= ~(1<<BIT[name]); };
+  e.addEventListener("pointerdown", down);
+  e.addEventListener("pointerup", up); e.addEventListener("pointercancel", up);
+  e.addEventListener("lostpointercapture", up);
+  return e;
+}
+function stick(x,y,d,kx,ky) {
+  const base = mk("stick",x,y,d,d); const knob = document.createElement("div"); knob.className="knob"; base.appendChild(knob);
+  let pid = null;
+  const set = (nx,ny) => { st[kx]=Math.round(nx*32767); st[ky]=Math.round(ny*32767);
+    knob.style.transform = `translate(${nx*61.1}%,${-ny*61.1}%)`; };
+  const move = ev => {
+    if (ev.pointerId !== pid) return;
+    const r = base.getBoundingClientRect(), travel = r.width*0.275;
+    let dx = (ev.clientX - (r.left+r.width/2))/travel, dy = (ev.clientY - (r.top+r.height/2))/travel;
+    const m = Math.hypot(dx,dy); if (m>1) { dx/=m; dy/=m; }
+    const dz = 0.06, mm = Math.min(m,1);
+    if (mm < dz) { set(0,0); return; }
+    const k = (mm-dz)/(1-dz)/mm;               // rescale outside the dead zone
+    set(Math.max(-1,Math.min(1,(dx*(m>1?1:1))*k)), Math.max(-1,Math.min(1,(-dy)*k)));
+  };
+  base.addEventListener("pointerdown", ev => { ev.preventDefault(); pid=ev.pointerId; base.setPointerCapture(pid); move(ev); });
+  base.addEventListener("pointermove", move);
+  const end = ev => { if (ev.pointerId===pid) { pid=null; set(0,0); } };
+  base.addEventListener("pointerup", end); base.addEventListener("pointercancel", end);
+}
+button(30,8,130,42,"LT","LT");   button(30,56,130,42,"LB","LB");
+button(740,8,130,42,"RT","RT");  button(740,56,130,42,"RB","RB");
+stick(50,120,160,"lx","ly");     stick(535,260,150,"rx","ry");
+button(60,300,64,32,"L3","L3","small");  button(700,340,64,32,"R3","R3","small");
+button(261,248,58,58,"▲","UP");  button(261,364,58,58,"▼","DOWN");
+button(203,306,58,58,"◀","LEFT");button(319,306,58,58,"▶","RIGHT");
+button(739,107,62,62,"Y","Y","round face-Y"); button(739,231,62,62,"A","A","round face-A");
+button(677,169,62,62,"X","X","round face-X"); button(801,169,62,62,"B","B","round face-B");
+button(385,160,70,34,"Back","BACK","small"); button(465,160,70,34,"Start","START","small");
+button(415,100,70,44,"⌂","GUIDE","round");
+const fs = mk("btn small",405,50,90,34,"⛶ Full");
+fs.addEventListener("click", async () => {
+  try { if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); try{await screen.orientation.lock("landscape");}catch(e){} }
+        else await document.exitFullscreen(); } catch(e){}
+});
+const MODES = ["Motion: off", "Motion: tilt", "Motion: gyro"];
+const mb = mk("btn small",270,50,125,34,MODES[motionMode]);
+const sb = mk("btn small",605,50,90,34,"Sens "+SENS[sensIdx]);
+function applyMotion() {
+  mb.textContent = MODES[motionMode]; sb.textContent = "Sens " + SENS[sensIdx];
+  try { RGNative.setMode(motionMode); RGNative.setSens(SENS[sensIdx]); } catch(e){}
+  try { localStorage.setItem("rgmode", motionMode); localStorage.setItem("rgsens", sensIdx); } catch(e){}
+  if (!motionMode) { mot.t = mot.gx = mot.gy = 0; }
+}
+mb.addEventListener("click", () => { motionMode = (motionMode + 1) % 3; applyMotion(); });
+sb.addEventListener("click", () => { sensIdx = (sensIdx + 1) % 3; applyMotion(); });
+if (NATIVE) { fs.style.display = "none"; applyMotion(); } else { mb.style.display = sb.style.display = "none"; }
+const hp = mk("btn small",505,50,90,34,"📳 On"); 
+hp.addEventListener("click", () => { haptics=!haptics; hp.textContent = haptics?"📳 On":"📳 Off"; });
+
+/* ---------- fit the 900x440 stage into the available space ---------- */
+function fit() {
+  const r = $("#wrap").getBoundingClientRect();
+  const s = Math.min(r.width/900, r.height/440);
+  stage.style.transform = `translate(-50%,-50%) scale(${s})`;
+}
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+document.addEventListener("contextmenu", e => e.preventDefault());
+document.addEventListener("touchmove", e => e.preventDefault(), {passive:false});
+
+/* ---------- network ---------- */
+let ws = null, authed = false, want = false, pinUsed = "", last = "", lastT = 0;
+function setPill(t, ok) { pill.textContent = t; pill.classList.toggle("ok", !!ok); }
+function connect(pin) {
+  pinUsed = pin; want = true;
+  try { ws && ws.close(); } catch(e){}
+  ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://") + location.host + "/ws");
+  setPill("Connecting…");
+  ws.onopen = () => ws.send("H" + pin);
+  ws.onmessage = e => {
+    const m = String(e.data);
+    if (m.startsWith("OK")) { authed = true; setPill("Connected · pad " + m.split(" ")[1], true);
+      $("#overlay").style.display = "none"; try { localStorage.setItem("rgpin", pin); } catch(x){} wake(); }
+    else if (m === "BAD")  { want = false; fail("Wrong PIN"); }
+    else if (m === "FULL") { want = false; fail("PC already has a phone connected"); }
+    else if (m.startsWith("V")) { const [,l,s] = m.split(" "); const p = Math.max(+l,+s); if (p>0) buzz(Math.min(80,20+p/4)); }
+  };
+  ws.onclose = () => { authed = false;
+    if (want) { setPill("Reconnecting…"); setTimeout(() => want && connect(pinUsed), 1000); }
+    else setPill("Not connected"); };
+  ws.onerror = () => {};
+}
+function fail(t) { setPill(t); $("#err").textContent = t; $("#overlay").style.display = "flex"; }
+function disconnect() { want = false; try { ws && ws.close(); } catch(e){} }
+
+setInterval(() => {                       // ~120 Hz send loop, keep-alive every 250 ms
+  if (!authed || !ws || ws.readyState !== 1) return;
+  const c = v => Math.max(-32767, Math.min(32767, Math.round(v)));
+  let lx = st.lx, rx = st.rx, ry = st.ry;
+  if (motionMode === 1) lx = c(lx + mot.t * 32767);
+  if (motionMode === 2) { rx = c(rx + mot.gx * 32767); ry = c(ry + mot.gy * 32767); }
+  const m = `S ${st.b} ${st.lt} ${st.rt} ${lx} ${st.ly} ${rx} ${ry}`, now = performance.now();
+  if (m !== last || now - lastT > 250) { ws.send(m); last = m; lastT = now; }
+}, 8);
+
+async function wake() { try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch(e){} }
+
+/* ---------- phone connect overlay ---------- */
+const pinEl = $("#pin");
+try { pinEl.value = localStorage.getItem("rgpin") || ""; } catch(e){}
+$("#go").onclick = () => { $("#err").textContent = ""; if (!/^\d{4}$/.test(pinEl.value)) { $("#err").textContent = "PIN is 4 digits"; return; } connect(pinEl.value); };
+pinEl.addEventListener("keydown", e => { if (e.key==="Enter") $("#go").click(); });
+if (!isHost && /^\d{4}$/.test(pinEl.value)) $("#go").click();   // auto-connect with the remembered PIN
+
+/* ---------- host console (PC only) ---------- */
+if (isHost) {
+  let hostPin = "";
+  const poll = async () => { try {
+    const d = await (await fetch("/status", {cache:"no-store"})).json();
+    hostPin = d.pin || ""; $("#hpin").textContent = hostPin; $("#hpads").textContent = d.pads; $("#hmax").textContent = d.max;
+    $("#hmode").textContent = d.mode==="keyboard" ? "Mode: keyboard + mouse (edit keys: "+(d.keymap||"keymap.json")+")" : "Mode: Xbox 360 pad";
+    $("#urls").innerHTML = d.urls.length ? d.urls.map(u=>`<b>${u}</b>`).join(" &nbsp;or&nbsp; ") : "<b>no network found</b>";
+    if (d.sim) $("#hpin").title = "simulation mode";
+  } catch(e){} };
+  poll(); setInterval(poll, 2000);
+  $("#hostpad").onclick = () => {
+    if (want) { disconnect(); $("#hostpad").textContent = "Use this PC as a controller"; }
+    else if (hostPin) { connect(hostPin); $("#hostpad").textContent = "Disconnect this PC"; }
+  };
+}
+</script>
+</body>
+</html>

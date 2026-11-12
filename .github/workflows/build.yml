@@ -1,0 +1,90 @@
+name: Build APK and Windows installer
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Host tests (simulation mode)
+        run: python windows/tests/test_host.py
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.7 }
+      - run: gradle -p android assembleRelease
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk GamePadRemote.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GamePadRemote-APK
+          path: GamePadRemote.apk
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Build EXE (PyInstaller)
+        working-directory: windows
+        run: |
+          python -m pip install pyinstaller
+          pyinstaller --noconfirm --onefile --noconsole --name RemoteGamepad --icon RemoteGamepad.ico --add-data "web;web" --distpath publish --workpath build_pyi host.py
+      - name: Smoke-test the built EXE (starts, answers, quits)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath windows/publish/RemoteGamepad.exe -ArgumentList '--no-gui','--no-browser','--sim','--port','18100' -PassThru
+          $ok = $false
+          foreach ($i in 1..30) { Start-Sleep -Milliseconds 500; try { $r = Invoke-RestMethod http://127.0.0.1:18100/status; if ($r.mode -eq 'keyboard') { $ok = $true; break } } catch {} }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw 'EXE did not start' }
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows\installer\setup.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GamePadRemote-Windows-Installer
+          path: windows/dist/RemoteGamepadSetup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GamePadRemote-Windows-Portable-EXE
+          path: windows/publish/RemoteGamepad.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dl, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dl/GamePadRemote.apk
+            dl/RemoteGamepadSetup.exe
+            dl/RemoteGamepad.exe

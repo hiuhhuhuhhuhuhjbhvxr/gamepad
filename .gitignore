@@ -1,0 +1,10 @@
+build/
+.gradle/
+bin/
+obj/
+*.spec
+__pycache__/
+windows/publish/
+windows/dist/
+windows/build_pyi/
+local.properties
